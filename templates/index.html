@@ -396,22 +396,22 @@
                 var percentNext = ((i + 1) / totalChunks) * 100;
 
                 // Upload this chunk with XHR for progress
-                await new Promise(function(resolve, reject) {
+                await new Promise(function (resolve, reject) {
                     var xhr = new XMLHttpRequest();
-                    xhr.upload.onprogress = function(e) {
+                    xhr.upload.onprogress = function (e) {
                         if (e.lengthComputable) {
                             var chunkProgress = (e.loaded / e.total);
                             var totalProgress = percentBase + (chunkProgress * (percentNext - percentBase));
                             pBar.style.width = totalProgress + '%';
                             var prog = document.getElementById('prog-text');
-                            if (prog) prog.innerText = "UPLOADING: " + totalProgress.toFixed(0) + "% (chunk " + (i+1) + "/" + totalChunks + ")";
+                            if (prog) prog.innerText = "UPLOADING: " + totalProgress.toFixed(0) + "%";
                         }
                     };
-                    xhr.onload = function() {
+                    xhr.onload = function () {
                         if (xhr.status === 200) resolve(xhr.responseText);
                         else reject(new Error("Chunk " + i + " failed: " + xhr.statusText));
                     };
-                    xhr.onerror = function() { reject(new Error("Network error on chunk " + i)); };
+                    xhr.onerror = function () { reject(new Error("Network error on chunk " + i)); };
                     xhr.open('POST', '/api/upload-chunk', true);
                     xhr.send(formData);
                 });
@@ -420,8 +420,8 @@
             // Finalize the upload
             var finalResp = await fetch('/api/upload-finalize', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({upload_id: uploadId, original_filename: file.name, total_size: file.size})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ upload_id: uploadId, original_filename: file.name, total_size: file.size })
             });
             return await finalResp.json();
         }
@@ -466,9 +466,9 @@
                             // Small file: use direct upload
                             var formData = new FormData();
                             formData.append('file', file);
-                            var result = await new Promise(function(resolve, reject) {
+                            var result = await new Promise(function (resolve, reject) {
                                 var xhr = new XMLHttpRequest();
-                                xhr.upload.onprogress = function(e) {
+                                xhr.upload.onprogress = function (e) {
                                     if (e.lengthComputable) {
                                         var p = (e.loaded / e.total) * 100;
                                         pBar.style.width = p + '%';
@@ -476,11 +476,11 @@
                                         if (prog) prog.innerText = "UPLOADING: " + p.toFixed(0) + "%";
                                     }
                                 };
-                                xhr.onload = function() {
+                                xhr.onload = function () {
                                     if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
                                     else reject(new Error(xhr.statusText));
                                 };
-                                xhr.onerror = function() { reject(new Error("Network error")); };
+                                xhr.onerror = function () { reject(new Error("Network error")); };
                                 xhr.open('POST', '/upload', true);
                                 xhr.send(formData);
                             });
@@ -488,8 +488,8 @@
                         }
                     }
                     pContainer.style.display = 'none';
-                    displayResults(status, {files: allResults});
-                } catch(e) {
+                    displayResults(status, { files: allResults });
+                } catch (e) {
                     console.error(e);
                     pContainer.style.display = 'none';
                     status.innerText = "UPLOAD FAILED: " + e.message;

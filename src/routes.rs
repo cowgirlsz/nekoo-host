@@ -511,6 +511,15 @@ pub async fn upload(
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("bin");
     let slug = format!("{}.{}", base_slug, extension);
+
+    // Rename temp file to slug-based name so download route can find it
+    let slug_temp_path = format!("temp_uploads/{}", slug);
+    if let Err(e) = tokio::fs::rename(&temp_path, &slug_temp_path).await {
+        tracing::error!("Failed to rename temp file: {}", e);
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare file").into_response();
+    }
+    let temp_path = slug_temp_path;
     
     // Public uploads - no user authentication
     let user_id: Option<i64> = None;
@@ -664,11 +673,46 @@ pub async fn download(
     let github_url = row.0;
     let original_filename = row.1;
 
-    // Stream/Proxy the file to hide GitHub URL and keep "dropl.link"
-    // Stream/Proxy the file to hide GitHub URL and keep "dropl.link"
-    // Log removed
+    // If GitHub upload is still pending, serve from local temp file
+    if github_url == "pending" {
+        let temp_path = format!("temp_uploads/{}", slug);
+        if let Ok(file) = tokio::fs::File::open(&temp_path).await {
+            let metadata = tokio::fs::metadata(&temp_path).await.ok();
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = axum::body::Body::from_stream(stream);
 
-    // Use shared client
+            let ext = std::path::Path::new(&original_filename)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("bin");
+            let content_type = match ext.to_lowercase().as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "pdf" => "application/pdf",
+                "txt" => "text/plain",
+                "mp4" => "video/mp4",
+                "zip" => "application/zip",
+                "ipa" => "application/octet-stream",
+                _ => "application/octet-stream",
+            };
+            let encoded = urlencoding::encode(&original_filename).to_string();
+            let mut builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, content_type)
+                .header(axum::http::header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"; filename*=UTF-8''{}", original_filename, encoded));
+            if let Some(meta) = metadata {
+                builder = builder.header(axum::http::header::CONTENT_LENGTH, meta.len().to_string());
+            }
+            return builder.body(body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        } else {
+            return Ok((StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html").replace("<p id=\"error-msg\"></p>", "<p>File is still being processed. Please try again in a moment.</p>"))).into_response());
+        }
+    }
+
+    // Use shared client to fetch from GitHub
     let resp = state.client.get(&github_url)
         .send()
         .await
@@ -935,6 +979,15 @@ pub async fn upload_finalize(
     // Generate slug
     let base_slug: String = (0..20).map(|_| rand::thread_rng().gen_range(0..=9).to_string()).collect();
     let slug = format!("{}.{}", base_slug, extension);
+
+    // Rename assembled file to slug-based name so download route can find it
+    let slug_temp_path = format!("temp_uploads/{}", slug);
+    if let Err(e) = tokio::fs::rename(&temp_path, &slug_temp_path).await {
+        tracing::error!("Failed to rename assembled file: {}", e);
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "rename failed"}))).into_response();
+    }
+    let temp_path = slug_temp_path;
 
     // Insert into database
     let expires_at: Option<chrono::DateTime<chrono::Utc>> = None;
