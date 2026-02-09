@@ -43,7 +43,7 @@ pub static MAINTENANCE_MODE: AtomicBool = AtomicBool::new(false);
 pub async fn admin_panel(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("cdn.nekoo.ru") {
+            if host_str.contains("dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
@@ -346,7 +346,7 @@ pub async fn admin_slurp(
 pub async fn index(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("cdn.nekoo.ru") {
+            if host_str.contains("dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
@@ -367,7 +367,7 @@ pub async fn index(headers: HeaderMap) -> impl IntoResponse {
 pub async fn view_code(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("cdn.nekoo.ru") {
+            if host_str.contains("dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
@@ -586,7 +586,7 @@ pub async fn upload(
     Json(json!({
         "files": [{
             "status": "success",
-            "url": format!("https://cdn.nekoo.ru/{}", slug),
+            "url": format!("https://dropl.link/{}", slug),
             "slug": slug,
             "id": row_id,
             "size": file_size,
@@ -664,8 +664,8 @@ pub async fn download(
     let github_url = row.0;
     let original_filename = row.1;
 
-    // Stream/Proxy the file to hide GitHub URL and keep "cdn.nekoo.ru"
-    // Stream/Proxy the file to hide GitHub URL and keep "cdn.nekoo.ru"
+    // Stream/Proxy the file to hide GitHub URL and keep "dropl.link"
+    // Stream/Proxy the file to hide GitHub URL and keep "dropl.link"
     // Log removed
 
     // Use shared client
