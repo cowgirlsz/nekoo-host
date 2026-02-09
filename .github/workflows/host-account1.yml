@@ -1,0 +1,71 @@
+name: Nekoo Host - Account 1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0,12 * * *'  # Midnight and noon UTC
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustc --version
+      
+      - name: Build Nekoo
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+          ls -lh target/release/nekoo
+      
+      - name: Setup Database
+        run: |
+          # Create fresh database with migrations
+          touch nekoo.db
+          
+      - name: Start Nekoo Application
+        env:
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+        run: |
+          source $HOME/.cargo/env
+          ./target/release/nekoo &
+          NEKOO_PID=$!
+          
+          # Wait for app to start
+          sleep 10
+          
+          # Check if running
+          if kill -0 $NEKOO_PID 2>/dev/null; then
+            echo "✅ Nekoo started successfully (PID: $NEKOO_PID)"
+          else
+            echo "❌ Nekoo failed to start"
+            exit 1
+          fi
+          
+          # Keep PID for later
+          echo $NEKOO_PID > /tmp/nekoo.pid
+      
+      - name: Setup Cloudflare Tunnel
+        env:
+          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+        run: |
+          # Download cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          
+          # Start tunnel
+          ./cloudflared-linux-amd64 tunnel --no-autoupdate run --token $TUNNEL_TOKEN &
+          TUNNEL_PID=$!
+          
+          echo "✅ Cloudflare Tunnel started (PID: $TUNNEL_PID)"
+          
+          # Keep alive for 6 hours
+          sleep 21600
