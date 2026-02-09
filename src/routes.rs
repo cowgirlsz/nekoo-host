@@ -811,3 +811,202 @@ pub async fn terms_page() -> Html<String> {
     Html(html)
 }
 
+// --- Chunked Upload Support ---
+
+pub async fn upload_chunk(
+    State(_state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut upload_id = String::new();
+    let mut chunk_index: u32 = 0;
+    let mut chunk_data: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "upload_id" => {
+                upload_id = field.text().await.unwrap_or_default();
+            }
+            "chunk_index" => {
+                chunk_index = field.text().await.unwrap_or_default().parse().unwrap_or(0);
+            }
+            "file" => {
+                chunk_data = Some(field.bytes().await.unwrap_or_default().to_vec());
+            }
+            _ => {
+                let _ = field.text().await; // consume other fields
+            }
+        }
+    }
+
+    if upload_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "missing upload_id"}))).into_response();
+    }
+
+    let chunk_data = match chunk_data {
+        Some(d) => d,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "no chunk data"}))).into_response(),
+    };
+
+    // Save chunk to temp_uploads/
+    let chunk_path = format!("temp_uploads/{}_{}", upload_id, chunk_index);
+    if let Err(e) = tokio::fs::write(&chunk_path, &chunk_data).await {
+        tracing::error!("Failed to write chunk: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "write failed"}))).into_response();
+    }
+
+    tracing::info!("Saved chunk {} for upload {}", chunk_index, upload_id);
+    Json(json!({"status": "ok", "chunk_index": chunk_index})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct FinalizeRequest {
+    pub upload_id: String,
+    pub original_filename: String,
+    pub total_size: u64,
+}
+
+pub async fn upload_finalize(
+    State(state): State<AppState>,
+    Json(req): Json<FinalizeRequest>,
+) -> impl IntoResponse {
+    // Find all chunk files for this upload_id
+    let mut chunk_files: Vec<(u32, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("temp_uploads") {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.starts_with(&format!("{}_", req.upload_id)) {
+                if let Some(idx_str) = fname.strip_prefix(&format!("{}_", req.upload_id)) {
+                    if let Ok(idx) = idx_str.parse::<u32>() {
+                        chunk_files.push((idx, entry.path().to_string_lossy().to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    if chunk_files.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "no chunks found"}))).into_response();
+    }
+
+    // Sort by chunk index
+    chunk_files.sort_by_key(|c| c.0);
+
+    // Assemble into final file
+    let extension = std::path::Path::new(&req.original_filename)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("bin");
+    let temp_path = format!("temp_uploads/assembled_{}.{}", req.upload_id, extension);
+
+    {
+        let mut output = match tokio::fs::File::create(&temp_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Failed to create assembled file: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "assembly failed"}))).into_response();
+            }
+        };
+
+        for (idx, chunk_path) in &chunk_files {
+            match tokio::fs::read(chunk_path).await {
+                Ok(data) => {
+                    if let Err(e) = output.write_all(&data).await {
+                        tracing::error!("Failed to write chunk {}: {}", idx, e);
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "write failed"}))).into_response();
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to read chunk {}: {}", idx, e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "read failed"}))).into_response();
+                }
+            }
+        }
+    }
+
+    // Delete chunk files
+    for (_, chunk_path) in &chunk_files {
+        let _ = tokio::fs::remove_file(chunk_path).await;
+    }
+
+    let file_size = req.total_size as i64;
+    let file_name = req.original_filename.clone();
+
+    // Generate slug
+    let base_slug: String = (0..20).map(|_| rand::thread_rng().gen_range(0..=9).to_string()).collect();
+    let slug = format!("{}.{}", base_slug, extension);
+
+    // Insert into database
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> = None;
+    let user_id: Option<i64> = None;
+    let is_private = false;
+
+    let row_id: i64 = match sqlx::query_scalar(
+        "INSERT INTO uploads (slug, github_url, original_filename, file_size, expires_at, user_id, is_private) VALUES (?, 'pending', ?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(&slug)
+    .bind(&file_name)
+    .bind(file_size)
+    .bind(expires_at.map(|dt| dt.to_rfc3339()))
+    .bind(user_id)
+    .bind(is_private as i32)
+    .fetch_one(&state.pool)
+    .await {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "database error"}))).into_response();
+        }
+    };
+
+    // Spawn async GitHub upload
+    let pool = state.pool.clone();
+    let client = state.client.clone();
+    let strategy = state.rotation_strategy.load(Ordering::SeqCst);
+    let slug_clone = slug.clone();
+    let file_name_clone = file_name.clone();
+    let temp_path_clone = temp_path.clone();
+
+    tokio::spawn(async move {
+        let ext = std::path::Path::new(&file_name_clone)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("bin");
+
+        let random_filename = format!("{}.{}",
+            (0..32).map(|_| rand::thread_rng().gen_range(0..=9).to_string()).collect::<String>(),
+            ext
+        );
+
+        if let Ok(file) = tokio::fs::File::open(&temp_path_clone).await {
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = reqwest::Body::wrap_stream(stream);
+
+            if let Ok((user, token)) = github::get_random_token(&pool, strategy).await {
+                if let Ok(github_url) = github::create_repo_and_upload(
+                    &client, &user, &token, &random_filename, body, file_size as u64
+                ).await {
+                    let _ = sqlx::query("UPDATE uploads SET github_url = ? WHERE slug = ?")
+                        .bind(&github_url)
+                        .bind(&slug_clone)
+                        .execute(&pool)
+                        .await;
+                    tracing::info!("Chunked file {} uploaded to GitHub: {}", slug_clone, github_url);
+                }
+            }
+        }
+        let _ = tokio::fs::remove_file(&temp_path_clone).await;
+    });
+
+    Json(json!({
+        "files": [{
+            "status": "success",
+            "url": format!("https://cdn.dropl.link/{}", slug),
+            "slug": slug,
+            "id": row_id,
+            "size": file_size,
+            "original_filename": file_name,
+            "created_at": chrono::Utc::now().to_rfc3339()
+        }]
+    })).into_response()
+}

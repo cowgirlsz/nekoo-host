@@ -91,6 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Upload endpoints
         .route("/upload", post(routes::upload))
         .route("/api/upload", post(routes::upload))
+        .route("/api/upload-chunk", post(routes::upload_chunk))
+        .route("/api/upload-finalize", post(routes::upload_finalize))
         // File access
         .route("/view/:slug", get(routes::view_code))
         .route("/:slug", get(routes::download))

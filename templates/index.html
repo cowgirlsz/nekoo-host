@@ -343,6 +343,89 @@
         }
 
 
+        var CHUNK_SIZE = 90 * 1024 * 1024; // 90MB chunks (under Cloudflare 100MB limit)
+
+        function displayResults(status, data) {
+            status.innerHTML = "<b>RESULTS:</b>";
+            var files = data.files;
+            var html = "";
+            for (var i = 0; i < files.length; i++) {
+                var item = files[i];
+                var size_str = (item.size > 1024 * 1024 * 1024) ? (item.size / 1024 / 1024 / 1024).toFixed(2) + " GB" :
+                    (item.size > 1024 * 1024) ? (item.size / 1024 / 1024).toFixed(2) + " MB" :
+                        (item.size / 1024).toFixed(0) + " KB";
+                var viewLink = "/view/" + item.slug;
+                var ext = item.original_filename.split('.').pop().toLowerCase();
+                var codeExts = ['txt', 'md', 'rs', 'c', 'cpp', 'h', 'hpp', 'py', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'yaml', 'yml', 'toml', 'xml', 'sh', 'bash', 'zsh', 'bat', 'ps1', 'php', 'rb', 'lua', 'go', 'java', 'kt', 'swift', 'cs', 'sql', 'ini', 'cfg', 'conf', 'log', 'csv', 'svg'];
+                var viewCodeBtn = "";
+                if (codeExts.indexOf(ext) !== -1) {
+                    viewCodeBtn = " <a href='" + viewLink + "' target='_blank' class='btn' style='font-size:10px; padding:3px 6px;'>VIEW CODE</a>";
+                }
+                html += "<div style='margin-bottom:8px; border-bottom:1px dashed #666; padding-bottom:8px;'>" +
+                    "<strong>" + escapeHtml(item.original_filename) + "</strong> (" + size_str + ")<br>" +
+                    "ID: " + item.id + "<br>" +
+                    "<a href='" + item.url + "' target='_blank' class='url-link'>" + item.url + "</a> " +
+                    "<button onclick='copyToClipboard(\"" + item.url + "\")' class='btn' style='font-size:10px; padding:3px;'>COPY</button>" +
+                    viewCodeBtn +
+                    "<div style='margin-top:8px;'><img src='https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=" + encodeURIComponent(item.url) + "' alt='QR'></div>" +
+                    "</div>";
+            }
+            var d = document.createElement('div');
+            d.innerHTML = html;
+            status.appendChild(d);
+        }
+
+        async function uploadChunked(file, pBar, pContainer, status) {
+            var totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+            var uploadId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+            for (var i = 0; i < totalChunks; i++) {
+                var start = i * CHUNK_SIZE;
+                var end = Math.min(start + CHUNK_SIZE, file.size);
+                var chunk = file.slice(start, end);
+
+                var formData = new FormData();
+                formData.append('file', chunk, file.name);
+                formData.append('upload_id', uploadId);
+                formData.append('chunk_index', i.toString());
+                formData.append('total_chunks', totalChunks.toString());
+                formData.append('original_filename', file.name);
+                formData.append('total_size', file.size.toString());
+
+                var percentBase = (i / totalChunks) * 100;
+                var percentNext = ((i + 1) / totalChunks) * 100;
+
+                // Upload this chunk with XHR for progress
+                await new Promise(function(resolve, reject) {
+                    var xhr = new XMLHttpRequest();
+                    xhr.upload.onprogress = function(e) {
+                        if (e.lengthComputable) {
+                            var chunkProgress = (e.loaded / e.total);
+                            var totalProgress = percentBase + (chunkProgress * (percentNext - percentBase));
+                            pBar.style.width = totalProgress + '%';
+                            var prog = document.getElementById('prog-text');
+                            if (prog) prog.innerText = "UPLOADING: " + totalProgress.toFixed(0) + "% (chunk " + (i+1) + "/" + totalChunks + ")";
+                        }
+                    };
+                    xhr.onload = function() {
+                        if (xhr.status === 200) resolve(xhr.responseText);
+                        else reject(new Error("Chunk " + i + " failed: " + xhr.statusText));
+                    };
+                    xhr.onerror = function() { reject(new Error("Network error on chunk " + i)); };
+                    xhr.open('POST', '/api/upload-chunk', true);
+                    xhr.send(formData);
+                });
+            }
+
+            // Finalize the upload
+            var finalResp = await fetch('/api/upload-finalize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({upload_id: uploadId, original_filename: file.name, total_size: file.size})
+            });
+            return await finalResp.json();
+        }
+
         document.getElementById('uploadForm').onsubmit = function (event) {
             event.preventDefault();
             if (selectedFiles.length === 0 && fileInput.files.length === 0) {
@@ -356,22 +439,13 @@
 
             pContainer.style.display = 'block';
             pBar.style.width = '0%';
-            pBar.style.backgroundColor = '#333'; // Reset color
+            pBar.style.backgroundColor = '#333';
             status.style.display = 'block';
             status.innerText = "STARTING...";
             uploadBtn.style.display = 'none';
 
-
-
-            // Simple upload - no hash checking, just upload directly
             (async function () {
-                var actualUploads = new FormData();
-                var files = selectedFiles.length > 0 ? selectedFiles : fileInput.files;
-
-                for (var i = 0; i < files.length; i++) {
-                    actualUploads.append('file', files[i]);
-                }
-
+                var files = selectedFiles.length > 0 ? selectedFiles : Array.from(fileInput.files);
                 if (files.length === 0) {
                     status.innerText = "No files selected";
                     pContainer.style.display = 'none';
@@ -380,72 +454,47 @@
 
                 status.innerHTML = "<b>UPLOADING...</b><br><div id='prog-text' style='font-weight:bold; color:blue;'>0%</div>";
 
-                var xhr = new XMLHttpRequest();
-                xhr.upload.onprogress = function (e) {
-                    if (e.lengthComputable) {
-                        var percentComplete = (e.loaded / e.total) * 100;
-                        pBar.style.width = percentComplete + '%';
-                        pContainer.setAttribute('aria-valuenow', percentComplete);
-                        var prog = document.getElementById('prog-text');
-                        if (prog) {
-                            prog.innerText = "UPLOADING: " + percentComplete.toFixed(0) + "%";
+                try {
+                    var allResults = [];
+                    for (var fi = 0; fi < files.length; fi++) {
+                        var file = files[fi];
+                        if (file.size > CHUNK_SIZE) {
+                            // Large file: use chunked upload
+                            var result = await uploadChunked(file, pBar, pContainer, status);
+                            if (result.files) allResults = allResults.concat(result.files);
+                        } else {
+                            // Small file: use direct upload
+                            var formData = new FormData();
+                            formData.append('file', file);
+                            var result = await new Promise(function(resolve, reject) {
+                                var xhr = new XMLHttpRequest();
+                                xhr.upload.onprogress = function(e) {
+                                    if (e.lengthComputable) {
+                                        var p = (e.loaded / e.total) * 100;
+                                        pBar.style.width = p + '%';
+                                        var prog = document.getElementById('prog-text');
+                                        if (prog) prog.innerText = "UPLOADING: " + p.toFixed(0) + "%";
+                                    }
+                                };
+                                xhr.onload = function() {
+                                    if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
+                                    else reject(new Error(xhr.statusText));
+                                };
+                                xhr.onerror = function() { reject(new Error("Network error")); };
+                                xhr.open('POST', '/upload', true);
+                                xhr.send(formData);
+                            });
+                            if (result.files) allResults = allResults.concat(result.files);
                         }
                     }
-                };
-
-                xhr.onload = function () {
                     pContainer.style.display = 'none';
-                    if (xhr.status === 200) {
-                        status.innerHTML = "<b>RESULTS:</b>";
-                        try {
-                            var data = JSON.parse(xhr.responseText);
-                            var files = data.files;
-                            var html = "";
-                            for (var i = 0; i < files.length; i++) {
-                                var item = files[i];
-                                var size_str = (item.size > 1024 * 1024 * 1024) ? (item.size / 1024 / 1024 / 1024).toFixed(2) + " GB" :
-                                    (item.size > 1024 * 1024) ? (item.size / 1024 / 1024).toFixed(2) + " MB" :
-                                        (item.size / 1024).toFixed(0) + " KB";
-                                var viewLink = "/view/" + item.slug;
-                                var ext = item.original_filename.split('.').pop().toLowerCase();
-                                var codeExts = ['txt', 'md', 'rs', 'c', 'cpp', 'h', 'hpp', 'py', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'yaml', 'yml', 'toml', 'xml', 'sh', 'bash', 'zsh', 'bat', 'ps1', 'php', 'rb', 'lua', 'go', 'java', 'kt', 'swift', 'cs', 'sql', 'ini', 'cfg', 'conf', 'log', 'csv', 'svg'];
-                                var viewCodeBtn = "";
-                                if (codeExts.indexOf(ext) !== -1) {
-                                    viewCodeBtn = " <a href='" + viewLink + "' target='_blank' class='btn' style='font-size:10px; padding:3px 6px;'>VIEW CODE</a>";
-                                }
-
-                                html += "<div style='margin-bottom:8px; border-bottom:1px dashed #666; padding-bottom:8px;'>" +
-                                    "<strong>" + escapeHtml(item.original_filename) + "</strong> (" + size_str + ")<br>" +
-                                    "ID: " + item.id + "<br>" +
-                                    "<a href='" + item.url + "' target='_blank' class='url-link'>" + item.url + "</a> " +
-                                    "<button onclick='copyToClipboard(\"" + item.url + "\")' class='btn' style='font-size:10px; padding:3px;'>COPY</button>" +
-                                    viewCodeBtn +
-                                    "<div style='margin-top:8px;'><img src='https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=" + encodeURIComponent(item.url) + "' alt='QR'></div>" +
-                                    "</div>";
-                            }
-                            var d = document.createElement('div');
-                            d.innerHTML = html;
-                            status.appendChild(d);
-                        } catch (e) {
-                            console.error(e);
-                            status.innerText += " ERROR PARSING.";
-                            pBar.style.backgroundColor = 'red';
-                        }
-                    } else {
-                        status.innerText = "ERROR: " + xhr.statusText;
-                        pBar.style.backgroundColor = 'red';
-                    }
-                };
-
-                xhr.onerror = function () {
-                    status.innerText = "UPLOAD FAILED.";
+                    displayResults(status, {files: allResults});
+                } catch(e) {
+                    console.error(e);
                     pContainer.style.display = 'none';
+                    status.innerText = "UPLOAD FAILED: " + e.message;
                     pBar.style.backgroundColor = 'red';
-                };
-
-                xhr.open('POST', '/upload', true);
-                xhr.send(actualUploads);
-
+                }
             })();
         };
 
