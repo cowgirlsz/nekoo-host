@@ -586,7 +586,7 @@ pub async fn upload(
     Json(json!({
         "files": [{
             "status": "success",
-            "url": format!("https://dropl.link/{}", slug),
+            "url": format!("https://cdn.dropl.link/{}", slug),
             "slug": slug,
             "id": row_id,
             "size": file_size,
