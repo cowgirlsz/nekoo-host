@@ -1,14 +1,14 @@
-name: Nekoo Host - Account 1
+name: Nekoo Host - Account 3
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'  # Midnight UTC
+    - cron: '36 9 * * *'  # 09:36 UTC
 
 jobs:
   host:
     runs-on: ubuntu-latest
-    timeout-minutes: 340  # ~5.6 hours
+    timeout-minutes: 340
     
     steps:
       - name: Checkout
@@ -32,7 +32,6 @@ jobs:
         run: |
           mkdir -p temp_uploads
           
-          # Try to restore database from backup
           echo "Attempting to restore database from backup..."
           DOWNLOAD_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/avi8427/nekoo-host/releases/tags/db-backup" \
@@ -61,20 +60,14 @@ jobs:
           TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Download cloudflared
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared-linux-amd64
           
-          # Start Nekoo in background
           source $HOME/.cargo/env
           nohup ./target/release/nekoo > nekoo.log 2>&1 &
           NEKOO_PID=$!
-          echo "Nekoo PID: $NEKOO_PID"
           
-          # Wait for app to start
           sleep 5
-          
-          # Check if Nekoo is running
           if kill -0 $NEKOO_PID 2>/dev/null; then
             echo "✅ Nekoo is running (PID: $NEKOO_PID)"
           else
@@ -83,39 +76,20 @@ jobs:
             exit 1
           fi
           
-          # Test local connection
           sleep 2
           curl -s http://localhost:3000/health || echo "Health check failed"
-          
-          # Show first few log lines
-          echo "=== Nekoo Logs ==="
           head -20 nekoo.log
           
-          # Start Cloudflare Tunnel
           nohup ./cloudflared-linux-amd64 tunnel --no-autoupdate run --token $TUNNEL_TOKEN > tunnel.log 2>&1 &
           TUNNEL_PID=$!
           echo "✅ Cloudflare Tunnel started (PID: $TUNNEL_PID)"
-          
-          # Wait a bit for tunnel to connect
           sleep 10
-          echo "=== Tunnel Logs ==="
           head -20 tunnel.log
           
-          # Create backup release if it doesn't exist
-          curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/avi8427/nekoo-host/releases/tags/db-backup" | jq -r '.id' | grep -q null && \
-          curl -s -X POST -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            "https://api.github.com/repos/avi8427/nekoo-host/releases" \
-            -d '{"tag_name":"db-backup","name":"Database Backup","body":"Auto-managed DB backup","prerelease":true}' || true
-          
-          # Function to backup database
           backup_db() {
             local RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/avi8427/nekoo-host/releases/tags/db-backup" | jq -r '.id')
-            
             if [ "$RELEASE_ID" != "null" ] && [ "$RELEASE_ID" != "" ]; then
-              # Delete old asset if exists
               local OLD_ASSET=$(curl -s -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/avi8427/nekoo-host/releases/$RELEASE_ID/assets" \
                 | jq -r '.[] | select(.name == "nekoo.db") | .id')
@@ -123,8 +97,6 @@ jobs:
                 curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
                   "https://api.github.com/repos/avi8427/nekoo-host/releases/assets/$OLD_ASSET"
               fi
-              
-              # Upload new backup
               curl -s -X POST -H "Authorization: token $GH_TOKEN" \
                 -H "Content-Type: application/octet-stream" \
                 "https://uploads.github.com/repos/avi8427/nekoo-host/releases/$RELEASE_ID/assets?name=nekoo.db" \
@@ -133,38 +105,21 @@ jobs:
             fi
           }
           
-          # Keep both services alive
           echo "Services running. Starting monitoring loop..."
           BACKUP_COUNTER=0
           for i in {1..340}; do
             sleep 60
-            # Check if processes are still running
             if ! kill -0 $NEKOO_PID 2>/dev/null; then
-              echo "❌ Nekoo died! Logs:"
-              tail -50 nekoo.log
-              backup_db  # Final backup before exit
-              exit 1
+              echo "❌ Nekoo died!"; tail -50 nekoo.log; backup_db; exit 1
             fi
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-              echo "❌ Tunnel died! Logs:"
-              tail -50 tunnel.log
-              backup_db  # Final backup before exit
-              exit 1
+              echo "❌ Tunnel died!"; tail -50 tunnel.log; backup_db; exit 1
             fi
-            
             BACKUP_COUNTER=$((BACKUP_COUNTER + 1))
-            
-            # Backup database every 5 minutes
-            if [ $((BACKUP_COUNTER % 5)) -eq 0 ]; then
-              backup_db
-            fi
-            
-            # Log status every 30 minutes
+            if [ $((BACKUP_COUNTER % 5)) -eq 0 ]; then backup_db; fi
             if [ $((i % 30)) -eq 0 ]; then
               echo "[$i min] Services running. Nekoo PID: $NEKOO_PID, Tunnel PID: $TUNNEL_PID"
             fi
           done
-          
-          # Final backup before shutdown
           echo "Session ending, final backup..."
           backup_db
