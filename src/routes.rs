@@ -582,12 +582,15 @@ pub async fn upload(
                         .await;
                     
                     tracing::info!("File {} uploaded to GitHub: {}", slug_clone, github_url);
+                    // Only delete temp file after successful GitHub upload
+                    let _ = tokio::fs::remove_file(&temp_path_clone).await;
+                } else {
+                    tracing::warn!("GitHub upload failed for {}, keeping temp file", slug_clone);
                 }
+            } else {
+                tracing::warn!("No GitHub tokens available for {}, keeping temp file", slug_clone);
             }
         }
-
-        // Always delete temp file
-        let _ = tokio::fs::remove_file(&temp_path_clone).await;
     });
 
     // Return URL immediately (before GitHub upload completes)
@@ -1045,10 +1048,15 @@ pub async fn upload_finalize(
                         .execute(&pool)
                         .await;
                     tracing::info!("Chunked file {} uploaded to GitHub: {}", slug_clone, github_url);
+                    // Only delete temp file after successful GitHub upload
+                    let _ = tokio::fs::remove_file(&temp_path_clone).await;
+                } else {
+                    tracing::warn!("GitHub upload failed for chunked file {}, keeping temp file", slug_clone);
                 }
+            } else {
+                tracing::warn!("No GitHub tokens for chunked file {}, keeping temp file", slug_clone);
             }
         }
-        let _ = tokio::fs::remove_file(&temp_path_clone).await;
     });
 
     Json(json!({
