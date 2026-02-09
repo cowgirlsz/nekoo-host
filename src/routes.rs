@@ -43,7 +43,7 @@ pub static MAINTENANCE_MODE: AtomicBool = AtomicBool::new(false);
 pub async fn admin_panel(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("dropl.link") {
+            if host_str.contains("cdn.dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
@@ -346,7 +346,7 @@ pub async fn admin_slurp(
 pub async fn index(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("dropl.link") {
+            if host_str.contains("cdn.dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
@@ -367,7 +367,7 @@ pub async fn index(headers: HeaderMap) -> impl IntoResponse {
 pub async fn view_code(headers: HeaderMap) -> impl IntoResponse {
     if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            if host_str.contains("dropl.link") {
+            if host_str.contains("cdn.dropl.link") {
                  return (StatusCode::NOT_FOUND, Html(include_str!("../templates/404.html"))).into_response();
             }
         }
