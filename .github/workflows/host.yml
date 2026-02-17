@@ -30,6 +30,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          set +e
           mkdir -p temp_uploads
           echo "Restoring database from backups..."
           
@@ -37,13 +38,14 @@ jobs:
           BACKUP_REPOS=" azkookookoo/nekoo-host nopainnotraind/nekoo-host xToWBs/nekoo-host cowgirlsz/nekoo-host vvvcertambos/nekoo-host DaryoshKhiyam/nekoo-host avimf2005/nekoo-host avi8427/nekoo-host annarajak01/nekoo-host rajaksuhani09/nekoo-host leelavatirajak1/nekoo-host git1one/nekoo-host ballpooltracer/nekoo-host thatwassillybigrob/nekoo-host ankeshsingh77173-wq/nekoo-host baharamad8/nekoo-host dunyatarik628/nekoo-host faceofgits/nekoo-host maxytmaxyt1212-boop/nekoo-host akashseh261-alt/nekoo-host nyt44040-stack/nekoo-host pandeysangeeta1981-dev/nekoo-host manas807897-ui/nekoo-host sahilrajak2411-afk/nekoo-host sahilrajak1107-hash/nekoo-host sakesh277/nekoo-host"
           
           DB_RESTORED=false
-          BEST_SIZE=0
           
           for REPO in $BACKUP_REPOS; do
             if [ "$DB_RESTORED" = true ]; then break; fi
             
             echo "  Trying $REPO..."
-            DOWNLOAD_URL=$(curl -s -H "Authorization: token $GH_TOKEN"               "https://api.github.com/repos/$REPO/releases/tags/db-backup" 2>/dev/null               | jq -r '.assets[] | select(.name == "nekoo.db") | .url' 2>/dev/null)
+            RELEASE_JSON=$(curl -s -H "Authorization: token $GH_TOKEN"               "https://api.github.com/repos/$REPO/releases/tags/db-backup" 2>/dev/null)
+            
+            DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[]? | select(.name == "nekoo.db") | .url' 2>/dev/null || echo "")
             
             if [ "$DOWNLOAD_URL" != "" ] && [ "$DOWNLOAD_URL" != "null" ]; then
               curl -s -L -H "Authorization: token $GH_TOKEN"                 -H "Accept: application/octet-stream"                 "$DOWNLOAD_URL" -o nekoo.db.tmp 2>/dev/null
@@ -63,6 +65,7 @@ jobs:
             echo "⚠️ No backup found anywhere, starting fresh"
             touch nekoo.db
           fi
+          set -e
 
       - name: Create .env
         env:
